@@ -36,3 +36,5 @@ Dataset from [Kaggle Fake and Real News Dataset](https://www.kaggle.com/datasets
 
 ## Contributors
 - Abhinav Arun (abhinavarun3k@gmail.com)
+- ![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
