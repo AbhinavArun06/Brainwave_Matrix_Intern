@@ -35,4 +35,4 @@ print(result)  # Output: "Real News" or "Fake News"
 Dataset from [Kaggle Fake and Real News Dataset](https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset)
 
 ## Contributors
-- Your Name (your.email@example.com)
+- Abhinav Arun (abhinavarun3k@gmail.com)
