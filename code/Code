@@ -1,0 +1,173 @@
+%%time
+# Fraud Detection System - Kaggle Notebook
+# Step 1: Environment Setup
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import RobustScaler
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.ensemble import RandomForestClassifier, IsolationForest
+from sklearn.linear_model import LogisticRegression
+from xgboost import XGBClassifier
+from sklearn.metrics import (classification_report, confusion_matrix, 
+                             roc_auc_score, precision_recall_curve, 
+                             average_precision_score)
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import make_pipeline
+import warnings
+warnings.filterwarnings('ignore')
+
+# Step 2: Data Loading
+df = pd.read_csv('/kaggle/input/creditcardfraud/creditcard.csv')
+
+# Step 3: Exploratory Data Analysis
+print(f"Dataset Shape: {df.shape}")
+print(f"Fraud Rate: {df.Class.mean()*100:.4f}%")
+print("\nMissing Values:")
+print(df.isnull().sum().max())  # Should be 0
+
+# Visualize class distribution
+plt.figure(figsize=(10,6))
+sns.countplot(x='Class', data=df, palette='viridis')
+plt.title('Class Distribution (0: Normal, 1: Fraud)')
+plt.show()
+
+# Step 4: Feature Engineering & Preprocessing
+# Create time-based features
+df['Hour'] = df['Time'] % (24*3600) // 3600
+df['Day'] = (df['Time'] // (24*3600)) % 7
+
+# Scale important features
+scaler = RobustScaler()
+df['Amount'] = scaler.fit_transform(df['Amount'].values.reshape(-1,1))
+df['Time'] = scaler.fit_transform(df['Time'].values.reshape(-1,1))
+
+# Separate features and target
+X = df.drop('Class', axis=1)
+y = df['Class']
+
+# Step 5: Handle Class Imbalance
+# Split before resampling to avoid data leakage
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.25, stratify=y, random_state=42
+)
+
+# Apply SMOTE only to training data
+sm = SMOTE(sampling_strategy=0.5, random_state=42, k_neighbors=5)
+X_res, y_res = sm.fit_resample(X_train, y_train)
+
+print(f"\nResampled Training Shape: {X_res.shape}")
+print(f"Resampled Fraud Rate: {y_res.mean()*100:.2f}%")
+
+# Step 6: Model Training - Supervised Approaches
+models = {
+    "Random Forest": RandomForestClassifier(
+        n_estimators=150,
+        class_weight='balanced_subsample',
+        max_depth=8,
+        min_samples_leaf=5,
+        n_jobs=-1,
+        random_state=42
+    ),
+    "XGBoost": XGBClassifier(
+        scale_pos_weight=100,
+        max_depth=6,
+        learning_rate=0.1,
+        subsample=0.8,
+        use_label_encoder=False,
+        eval_metric='aucpr',
+        random_state=42
+    ),
+    "Logistic Regression": LogisticRegression(
+        class_weight='balanced',
+        solver='liblinear',
+        penalty='l1',
+        C=0.1,
+        max_iter=1000,
+        random_state=42
+    )
+}
+
+# Step 7: Model Evaluation
+results = {}
+for name, model in models.items():
+    model.fit(X_res, y_res)
+    y_pred = model.predict(X_test)
+    y_prob = model.predict_proba(X_test)[:, 1]
+    
+    # Store results
+    results[name] = {
+        'model': model,
+        'prob': y_prob,
+        'report': classification_report(y_test, y_pred, output_dict=True),
+        'confusion': confusion_matrix(y_test, y_pred),
+        'roc_auc': roc_auc_score(y_test, y_prob),
+        'pr_auc': average_precision_score(y_test, y_prob)
+    }
+    
+    # Print metrics
+    print(f"\n{name} Performance:")
+    print(classification_report(y_test, y_pred))
+    print(f"ROC AUC: {results[name]['roc_auc']:.4f}")
+    print(f"PR AUC: {results[name]['pr_auc']:.4f}")
+    
+    # Plot confusion matrix
+    plt.figure(figsize=(5,4))
+    sns.heatmap(results[name]['confusion'], annot=True, fmt='d', 
+                cmap='Blues', cbar=False)
+    plt.title(f'{name} Confusion Matrix')
+    plt.show()
+
+# Step 8: Anomaly Detection Approach (Isolation Forest)
+iso = IsolationForest(
+    n_estimators=200,
+    contamination=0.003,  # Approximate fraud rate
+    max_samples=256,
+    n_jobs=-1,
+    random_state=42
+)
+iso.fit(X_train)
+
+# Convert anomaly scores to predictions (-1 = anomaly)
+test_scores = iso.decision_function(X_test)
+iso_predictions = [1 if score < np.percentile(test_scores, 1) else 0 for score in test_scores]
+
+print("\nIsolation Forest Performance:")
+print(classification_report(y_test, iso_predictions))
+
+# Step 9: Model Comparison & Selection
+final_comparison = pd.DataFrame({
+    'Model': list(results.keys()) + ['Isolation Forest'],
+    'Precision': [results[m]['report']['1']['precision'] for m in results] + [precision_score(y_test, iso_predictions)],
+    'Recall': [results[m]['report']['1']['recall'] for m in results] + [recall_score(y_test, iso_predictions)],
+    'ROC AUC': [results[m]['roc_auc'] for m in results] + [roc_auc_score(y_test, test_scores)],
+    'PR AUC': [results[m]['pr_auc'] for m in results] + [average_precision_score(y_test, test_scores)]
+}).sort_values('Recall', ascending=False)
+
+print("\nModel Comparison:")
+display(final_comparison)
+
+# Step 10: Threshold Optimization for Best Model
+best_model = results['XGBoost']['model']
+y_prob = best_model.predict_proba(X_test)[:,1]
+
+# Find threshold that achieves 90% recall
+precision, recall, thresholds = precision_recall_curve(y_test, y_prob)
+optimal_idx = np.where(recall >= 0.90)[0][0]
+optimal_threshold = thresholds[optimal_idx]
+
+print(f"\nOptimal Threshold: {optimal_threshold:.4f}")
+print(f"At this threshold - Precision: {precision[optimal_idx]:.4f}, Recall: {recall[optimal_idx]:.4f}")
+
+# Step 11: Feature Importance Analysis
+plt.figure(figsize=(12,8))
+feat_importances = pd.Series(best_model.feature_importances_, index=X.columns)
+feat_importances.nlargest(15).sort_values().plot(kind='barh', color='darkgreen')
+plt.title('Top 15 Important Features (XGBoost)')
+plt.show()
+
+# Step 12: Save Final Model (for deployment)
+import joblib
+joblib.dump(best_model, 'fraud_detection_model.pkl')
+print("\nModel saved as 'fraud_detection_model.pkl'")
